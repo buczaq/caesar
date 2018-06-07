@@ -19,9 +19,12 @@ std::vector<std::string> encoded_words;
 
 std::mutex keys_mtx;
 std::mutex message_mtx;
+std::mutex dictionary_mtx;
 std::mutex encoded_words_mtx;
 
 std::condition_variable encoded_words_cv;
+
+std::atomic_int live_decoders;
 
 void encode(encoder e)
 {
@@ -30,9 +33,7 @@ void encode(encoder e)
 		std::cout << "encoder - waiting..." << std::endl;
 	}
 
-	int iterations { 100 };
-
-	while(iterations) {
+	while(live_decoders) {
 		string word;
 		{
 			std::unique_lock<std::mutex> lock(message_mtx);
@@ -56,9 +57,9 @@ void encode(encoder e)
 		}
 
 		encoded_words_cv.notify_one();
-		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-		iterations--;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
+	std::cout << "encoder dead" << std::endl;
 }
 
 void decode(decoder d)
@@ -68,7 +69,7 @@ void decode(decoder d)
 		std::cout << "decoder - waiting..." << std::endl;
 	}
 
-	int iterations { 100 };
+	int iterations { 500 };
 
 	while(iterations) {
 		string encoded_word;
@@ -103,24 +104,31 @@ void decode(decoder d)
 				message.push_back(word);
 				std::cout << "decoder - found valid word " << word << std::endl;
 			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			iterations--;
+			if (!iterations) break;
 		}
 	}
+	//Sstd::cout << "decoder dead" << std::endl;
+	live_decoders--;
+	std::cout << "decoders: " << live_decoders << std::endl;
 }
 
 int main()
 {
 	srand(time(NULL));
 
+	live_decoders = 45;
+
 	std::unique_lock<std::mutex> lock1 (keys_mtx);
-	for (int i = 0; i < 10000; i++) {
+	for (int i = 0; i < 100000; i++) {
 		keys.push_back(rand()%26 + 1);
 	}
 	lock1.unlock();
 
 	std::string line;
 	{
+		std::lock_guard<std::mutex> lock(message_mtx);
 	    std::ifstream infile;
     	infile.open("message.txt");
 
@@ -129,9 +137,11 @@ int main()
 	    	message.push_back(line);
 	    	infile >> line;
     	}
+    	infile.close();
 	}
 
 	{
+		std::lock_guard<std::mutex> lock(dictionary_mtx);
 	    std::ifstream infile;
     	infile.open("dictionary.txt");
 
@@ -140,6 +150,7 @@ int main()
 	    	dictionary.push_back(line);
 	    	infile >> line;
     	}
+    	infile.close();
 	}
 	
 	ready = true;
@@ -159,7 +170,7 @@ int main()
 		encoders.push_back(std::thread { encode, e });
 	}
 
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < 45; i++) {
 		decoders.push_back(std::thread { decode, d });
 	}
 
@@ -167,13 +178,7 @@ int main()
 		encoders[i].join();
 	}
 
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < 45; i++) {
 		decoders[i].join();
 	}
-
-	std::thread encode_thread(encode, e);
-	std::thread decode_thread(decode, d);
-
-	decode_thread.join();
-	encode_thread.join();
 }
